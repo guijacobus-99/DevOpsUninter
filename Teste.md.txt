@@ -1,0 +1,212 @@
+function main(workbook: ExcelScript.Workbook) {
+    // --- Abas ---
+    const sheetBanco: ExcelScript.Worksheet | null = workbook.getWorksheet("Banco de Dados - Casos");
+    const sheetBacklog: ExcelScript.Worksheet | null = workbook.getWorksheet("Backlog");
+
+    if (!sheetBanco) throw new Error('❌ A aba "Banco de Dados - Casos" não foi encontrada.');
+    if (!sheetBacklog) throw new Error('❌ A aba "Backlog" não foi encontrada.');
+
+    // --- Helpers ---
+    const norm = (v: unknown): string => String(v ?? "").trim().toLowerCase();
+
+    const getLastRow = (ws: ExcelScript.Worksheet): number => {
+        const used: ExcelScript.Range | null = ws.getUsedRange();
+        if (!used) return 0;
+        return used.getRowIndex() + used.getRowCount(); // 1-based
+    };
+
+    // Converte Excel serial -> Date (UTC) com base 1900
+    const dateFromExcelSerial = (serial: number): Date => {
+        const ms = Math.round((serial - 25569) * 86400000);
+        return new Date(ms);
+    };
+
+    // Converte Date -> Excel serial (1900 system)
+    const excelSerialFromDate = (d: Date): number => {
+        return d.getTime() / 86400000 + 25569;
+    };
+
+    // Tenta obter Date a partir de qualquer tipo suportado
+    const toDate = (v: unknown): Date | null => {
+        if (v === null || v === undefined || v === "") return null;
+        if (typeof v === "number") return dateFromExcelSerial(v);
+        if (v instanceof Date) return v;
+        const d = new Date(String(v));
+        return isNaN(d.getTime()) ? null : d;
+    };
+
+    // =========================
+    // 0) APLICAR VALIDAÇÃO NA COLUNA E (STATUS) DO BACKLOG (E7:E1048576)
+    // =========================
+    (function aplicarValidacaoStatus(): void {
+        const rngE: ExcelScript.Range = sheetBacklog.getRange("E7:E1048576");
+        const dv: ExcelScript.DataValidation = rngE.getDataValidation();
+
+        dv.setRule({
+            list: {
+                inCellDropDown: true,
+                // precisa ser string ou Range (não string[])
+                source: "Encerrar,Acompanhar"
+            }
+        });
+
+        dv.setPrompt({
+            showPrompt: true,
+            title: "Status",
+            message: "Preencha com 'Encerrar' ou 'Acompanhar'."
+        });
+
+        dv.setErrorAlert({
+            showAlert: true,
+            style: ExcelScript.DataValidationAlertStyle.stop,
+            title: "Valor inválido",
+            message: "Use apenas 'Encerrar' ou 'Acompanhar'."
+        });
+    })();
+
+    // =========================
+    // 1) LER BACKLOG (A7:E...)
+    // =========================
+    const startRowBacklog: number = 7;
+    const lastRowBacklog: number = getLastRow(sheetBacklog);
+    if (lastRowBacklog < startRowBacklog) {
+        console.log("⚠ Backlog não possui linhas para ler a partir de A7.");
+        return;
+    }
+
+    // A..E (A=Cliente, B=Tipo, C=Data Entrada, D=Sales, E=Status)
+    const rngBacklog: ExcelScript.Range = sheetBacklog.getRange(`A${startRowBacklog}:E${lastRowBacklog}`);
+    const dadosBacklog: (string | number | boolean)[][] =
+        rngBacklog.getValues() as (string | number | boolean)[][];
+
+    // Índices no Backlog (0-based dentro da matriz A..E)
+    const BKL_IDX_SALES = 3;   // D
+    const BKL_IDX_STATUS = 4;  // E
+
+    // Coleta Sales -> Status (Encerrar/Acompanhar)
+    const salesToStatus: Record<string, "Encerrar" | "Acompanhar"> = {};
+    const invalidRows: number[] = [];
+
+    for (let i = 0; i < dadosBacklog.length; i++) {
+        const linha = dadosBacklog[i];
+        const salesKey: string = norm(linha[BKL_IDX_SALES]);
+        const statusRaw: string = String(linha[BKL_IDX_STATUS] ?? "").trim();
+
+        if (!salesKey || statusRaw === "") continue;
+
+        const statusLow: string = statusRaw.toLowerCase();
+        if (statusLow === "encerrar" || statusLow === "acompanhar") {
+            const statusNorm = (statusLow === "encerrar" ? "Encerrar" : "Acompanhar") as ("Encerrar" | "Acompanhar");
+            salesToStatus[salesKey] = statusNorm; // última ocorrência prevalece
+        } else {
+            invalidRows.push(startRowBacklog + i);
+        }
+    }
+
+    if (invalidRows.length > 0) {
+        throw new Error(
+            `❌ Valor de Status inválido no Backlog nas linha(s): ${invalidRows.join(", ")}. ` +
+            `Use apenas "Encerrar" ou "Acompanhar".`
+        );
+    }
+
+    const salesKeys: string[] = Object.keys(salesToStatus);
+    if (salesKeys.length === 0) {
+        console.log("⚠ Nenhuma linha válida no Backlog (D=Sales e E=Status preenchidos com 'Encerrar'/'Acompanhar').");
+        return;
+    }
+
+    // ==================================
+    // 2) LER BANCO (UsedRange completo)
+    // ==================================
+    const usedBanco: ExcelScript.Range | null = sheetBanco.getUsedRange();
+    if (!usedBanco) throw new Error("❌ 'Banco de Dados - Casos' está vazio.");
+    const dadosBanco: (string | number | boolean)[][] =
+        usedBanco.getValues() as (string | number | boolean)[][];
+
+    // A: Cliente(0) | B: Assunto(1) | C: Núm. Sales(2) | D: Data Entrada(3) | E: Primeira Resposta(4)
+    // F: Descrição(5) | G: Tipo(6) | H: SLA(7) | I: Concluído?(8) | J: Data Conclusão(9)
+    // K: Tempo Decorrido(10) | L: Tópico(11) | M: Status(12)
+    const BCO_IDX_SALES = 2;       // C
+    const BCO_IDX_ENTRADA = 3;     // D
+    const BCO_IDX_CONCLUIDO = 8;   // I
+    const BCO_IDX_CONCLUSAO = 9;   // J
+    const BCO_IDX_TEMPO = 10;      // K
+    const BCO_IDX_STATUS = 12;     // M
+
+    // Índice: Sales -> linhas do banco
+    const salesToBancoRows: Record<string, number[]> = {};
+    for (let r = 1; r < dadosBanco.length; r++) { // pula cabeçalho
+        const salesBancoKey: string = norm(dadosBanco[r][BCO_IDX_SALES]);
+        if (!salesBancoKey) continue;
+        if (!salesToBancoRows[salesBancoKey]) salesToBancoRows[salesBancoKey] = [];
+        salesToBancoRows[salesBancoKey].push(r);
+    }
+
+    // ==================================
+    // 3) APLICAR ATUALIZAÇÕES + REGRA DE ENCERRAMENTO + TEMPO DECORRIDO
+    // ==================================
+    let atualizadosStatus: number = 0;
+    let concluidos: number = 0;
+    const notFound: string[] = [];
+
+    // Data/hora do sistema agora
+    const now: Date = new Date();
+    const nowSerial: number = excelSerialFromDate(now);
+
+    for (const salesKey of salesKeys) {
+        const statusNovo: "Encerrar" | "Acompanhar" = salesToStatus[salesKey];
+        const rowsBanco: number[] | undefined = salesToBancoRows[salesKey];
+
+        if (!rowsBanco || rowsBanco.length === 0) {
+            notFound.push(salesKey);
+            continue;
+        }
+
+        for (const r of rowsBanco) {
+            // 3.1) Atualiza Status (M)
+            const statusAtual: string = String(dadosBanco[r][BCO_IDX_STATUS] ?? "");
+            if (statusAtual !== statusNovo) {
+                usedBanco.getCell(r, BCO_IDX_STATUS).setValue(statusNovo);
+                atualizadosStatus++;
+            }
+
+            if (statusNovo === "Encerrar") {
+                // 3.2) Concluído? (I) = "Sim"
+                const conclAtual: string = String(dadosBanco[r][BCO_IDX_CONCLUIDO] ?? "");
+                if (conclAtual !== "Sim") {
+                    usedBanco.getCell(r, BCO_IDX_CONCLUIDO).setValue("Sim");
+                }
+
+                // 3.3) Data de Conclusão (J) = agora
+                usedBanco.getCell(r, BCO_IDX_CONCLUSAO).setValue(now);
+                usedBanco.getCell(r, BCO_IDX_CONCLUSAO).setNumberFormat("mm/dd/yyyy h:mm AM/PM");
+
+                // 3.4) Tempo Decorrido (K) = (Data Conclusão - Data Entrada), em dias decimais
+                const entradaVal: unknown = dadosBanco[r][BCO_IDX_ENTRADA];
+                const dEntrada: Date | null = toDate(entradaVal);
+
+                if (dEntrada) {
+                    const diffDays: number = (now.getTime() - dEntrada.getTime()) / 86400000;
+                    // grava como número (dias); formata com duas casas decimais
+                    usedBanco.getCell(r, BCO_IDX_TEMPO).setValue(diffDays);
+                    usedBanco.getCell(r, BCO_IDX_TEMPO).setNumberFormat("0.00");
+                } else {
+                    // Caso não seja possível obter a data de entrada, limpa/zera o tempo
+                    usedBanco.getCell(r, BCO_IDX_TEMPO).setValue("");
+                }
+
+                concluidos++;
+            }
+        }
+    }
+
+    if (notFound.length > 0) {
+        console.log(`ℹ Alguns Sales informados no Backlog não foram encontrados no Banco: ${notFound.join(", ")}`);
+    }
+
+    console.log(
+        `✅ Atualização concluída! Status atualizados: ${atualizadosStatus}. ` +
+        `Marcados como concluídos: ${concluidos}.`
+    );
+}
