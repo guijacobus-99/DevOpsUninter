@@ -1,0 +1,67 @@
+# Copie para config.toml e ajuste.  Seletores usam a sintaxe do Playwright:
+#   "text=Reschedule"   "role=button[name='Confirm']"   "#id"   "css=.classe"
+# Os valores marcados com  <<CALIBRAR>>  precisam ser conferidos no portal real
+# com:  python -m bot.main --descobrir   (veja o README).
+
+[geral]
+data_agendamento_atual = "2026-12-10"   # sua data atual em dezembro (AAAA-MM-DD)
+dias_uteis = 10                         # prazo máximo em dias úteis a partir do dia da execução
+considerar_feriados_irlanda = true      # feriados irlandeses não contam como dia útil
+aceitar_melhoria_parcial = true         # pega datas melhores que a atual mesmo fora do prazo, e segue tentando
+modo_simulacao = true                   # true = só avisa; troque para false para reagendar de verdade
+intervalo_minutos = 30                  # intervalo entre tentativas (mínimo 10)
+variacao_minutos = 10                   # aleatoriedade (+/-) no intervalo
+janela_inicio = "07:00"                 # só tenta dentro desta janela (horário de Dublin)
+janela_fim = "23:30"
+fuso = "Europe/Dublin"
+
+[portal]
+url_inicial = "https://portal.irishimmigration.ie/en/"
+perfil_navegador = "perfil_navegador"   # pasta onde o navegador guarda cookies/sessão
+headless = false                        # deixe false: você pode precisar resolver captcha/código
+timeout_ms = 20000
+tempo_login_manual_min = 10
+
+# Elemento que só aparece quando você está logado.                       <<CALIBRAR>>
+seletor_logado = "text=Sign out"
+
+# Login automático (opcional): defina IRP_EMAIL e IRP_SENHA no ambiente.  <<CALIBRAR>>
+seletor_email = "input[type=email]"
+seletor_senha = "input[type=password]"
+seletor_botao_entrar = "role=button[name=/sign in|log in/i]"
+passos_ate_login = [
+  { acao = "clicar", alvo = "text=/sign in|log in/i" },
+]
+
+# Cliques do painel até o calendário de reagendamento.                    <<CALIBRAR>>
+# acoes: clicar | ir | esperar | aguardar_ms | preencher (valor) | selecionar (valor)
+passos_ate_calendario = [
+  { acao = "clicar", alvo = "text=/my appointments/i" },
+  { acao = "clicar", alvo = "text=/reschedule/i" },
+]
+
+[calendario]
+# Dias clicáveis/disponíveis no calendário.                               <<CALIBRAR>>
+seletor_dias_disponiveis = "td.available, button.day:not([disabled])"
+# De onde tirar a data de cada dia: um atributo (ex.: "aria-label", "data-date")
+# ou "" para usar o texto do elemento.                                     <<CALIBRAR>>
+atributo_data = "aria-label"
+formato_data = ""                        # ex.: "%d/%m/%Y"; vazio = detecção automática
+# Se o dia só mostra o número ("12"), informe o cabeçalho do mês:         <<CALIBRAR>>
+seletor_cabecalho_mes = ""               # ex.: ".calendar-title"
+formato_cabecalho_mes = "%B %Y"          # ex.: "October 2026"
+seletor_proximo_mes = "role=button[name=/next/i]"
+max_meses = 4
+esperar_seletor = ""                     # opcional: algo que indica que o calendário carregou
+pausa_render_ms = 1500
+# Depois de clicar no dia, horários disponíveis (clica o primeiro). Vazio se não houver. <<CALIBRAR>>
+seletor_horarios = ""
+
+[confirmacao]
+# Cliques para confirmar o reagendamento depois de escolher dia/horário.  <<CALIBRAR>>
+passos = [
+  { acao = "clicar", alvo = "role=button[name=/confirm|submit|reschedule/i]" },
+]
+# Elemento que prova que deu certo.                                        <<CALIBRAR>>
+seletor_sucesso = "text=/successfully|confirmed/i"
+timeout_sucesso_ms = 20000

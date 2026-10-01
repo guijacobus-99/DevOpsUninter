@@ -1,0 +1,8 @@
+config.toml
+estado.json
+logs/
+perfil_navegador/
+__pycache__/
+.pytest_cache/
+.venv/
+.env

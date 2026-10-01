@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Portal falso (testes)</title></head>
+<body>
+<div id="app"></div>
+<script>
+// Portal falso só para testes automatizados: imita login -> agendamentos -> calendário -> horário -> confirmação.
+const slots = (new URLSearchParams(location.search).get("slots") || "").split(",").filter(Boolean);
+const app = document.getElementById("app");
+let mes = new Date(2026, 9, 1);
+
+function html(s) { app.innerHTML = s; }
+
+function telaLogin() {
+  html(`<button id="entrar-topo">Sign in</button>`);
+  document.getElementById("entrar-topo").onclick = () => {
+    html(`<input type="email"><input type="password"><button id="entrar">Log in</button>`);
+    document.getElementById("entrar").onclick = () => { localStorage.setItem("logado", "1"); painel(); };
+  };
+}
+
+function painel() {
+  html(`<a href="#" id="sair">Sign out</a> <a href="#" id="ag">My Appointments</a>`);
+  document.getElementById("ag").onclick = () => {
+    html(`<a href="#" id="sair">Sign out</a> <button id="re">Reschedule</button>`);
+    document.getElementById("re").onclick = calendario;
+  };
+}
+
+function calendario() {
+  const nome = mes.toLocaleString("en-IE", { month: "long", year: "numeric" });
+  const prefixo = `${mes.getFullYear()}-${String(mes.getMonth() + 1).padStart(2, "0")}`;
+  const dias = slots.filter(s => s.startsWith(prefixo));
+  html(`<a href="#">Sign out</a><h2 class="titulo">${nome}</h2>
+        <button aria-label="Next month" id="prox">&gt;</button>
+        <div>${dias.map(d => {
+          const dt = new Date(d + "T12:00:00");
+          const rot = dt.toLocaleDateString("en-IE", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).replace(/,/g, "");
+          return `<button class="day" aria-label="${rot}" data-d="${d}">${dt.getDate()}</button>`;
+        }).join("")}<button class="day" disabled aria-label="indisponível">1</button></div>`);
+  document.getElementById("prox").onclick = () => { mes = new Date(mes.getFullYear(), mes.getMonth() + 1, 1); calendario(); };
+  document.querySelectorAll("button.day:not([disabled])").forEach(b => b.onclick = () => horarios(b.dataset.d));
+}
+
+function horarios(d) {
+  html(`<button class="slot">09:30</button><button class="slot">11:00</button>`);
+  document.querySelectorAll(".slot").forEach(b => b.onclick = () => {
+    html(`<p>${d} ${b.textContent}</p><button id="ok">Confirm</button>`);
+    document.getElementById("ok").onclick = () => {
+      localStorage.setItem("reservado", d);
+      html(`<p id="sucesso">Appointment successfully rescheduled to ${d}</p>`);
+    };
+  });
+}
+
+localStorage.getItem("logado") ? painel() : telaLogin();
+</script>
+</body>
+</html>
