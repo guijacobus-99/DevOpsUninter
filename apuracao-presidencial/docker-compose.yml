@@ -1,6 +1,9 @@
 # Ambiente local completo da apuração.
 #   docker compose up -d --build
 #   Site: http://localhost:8080   Grafana: http://localhost:3001   Prometheus: http://localhost:9090
+#
+# Healthchecks usam 127.0.0.1, não localhost: com IPv6 ativo (ex.: runners do GitHub), localhost
+# resolve para ::1 e o nginx, que escuta só em IPv4, recusa a conexão.
 name: apuracao
 
 x-logging: &logging
@@ -20,7 +23,7 @@ services:
       FALHA_TAXA_INCONSISTENTE: ${FALHA_TAXA_INCONSISTENTE:-0.005}
     ports: ['127.0.0.1:8081:8080']
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/health']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/health']
       interval: 5s
       retries: 10
     logging: *logging
@@ -69,7 +72,7 @@ services:
       DATABASE_URL: postgres://apuracao:${POSTGRES_PASSWORD:-apuracao}@postgres:5432/apuracao
       REDIS_URL: redis://redis:6379
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:9100/health/live']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:9100/health/live']
       interval: 10s
     logging: *logging
 
@@ -84,7 +87,7 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/health/live']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/health/live']
       interval: 5s
       retries: 10
     logging: *logging
@@ -97,7 +100,7 @@ services:
       api: { condition: service_healthy }
     ports: ['8080:8080']
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/healthz']
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/healthz']
       interval: 10s
     logging: *logging
 

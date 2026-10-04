@@ -104,7 +104,7 @@ resource "aws_ecs_task_definition" "api" {
       { name = "REDIS_URL", value = local.redis_url },
     ]
     healthCheck = {
-      command     = ["CMD-SHELL", "wget -qO- http://localhost:3000/health/live || exit 1"]
+      command     = ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health/live || exit 1"]
       interval    = 10
       timeout     = 3
       retries     = 3
@@ -147,7 +147,7 @@ resource "aws_ecs_task_definition" "ingestor" {
       { name = "PGPASSWORD", valueFrom = "${aws_db_instance.principal.master_user_secret[0].secret_arn}:password::" },
     ]
     healthCheck = {
-      command     = ["CMD-SHELL", "wget -qO- http://localhost:9100/health/live || exit 1"]
+      command     = ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/health/live || exit 1"]
       interval    = 10
       timeout     = 3
       retries     = 3

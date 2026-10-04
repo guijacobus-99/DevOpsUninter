@@ -145,7 +145,7 @@ jobs:
         working-directory: apuracao-presidencial/services/ingestor
         run: |
           npm ci
-          npm run feed -- validar --base http://localhost:8081/oficial --eleicao 9001
+          npm run feed -- validar --base http://127.0.0.1:8081/oficial --eleicao 9001
       - name: Logs em caso de falha
         if: failure()
         run: docker compose logs --no-color --tail 200

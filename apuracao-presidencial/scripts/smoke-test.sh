@@ -5,7 +5,7 @@
 set -euo pipefail
 
 BASE="${1:-http://localhost:8080}"
-PROMETHEUS="${PROMETHEUS_URL:-http://localhost:9090}"
+PROMETHEUS="${PROMETHEUS_URL:-http://127.0.0.1:9090}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
