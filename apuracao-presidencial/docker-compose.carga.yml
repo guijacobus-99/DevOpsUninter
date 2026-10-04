@@ -1,0 +1,7 @@
+# Teste de carga: desliga o limite por IP da borda (o k6 sai de um único IP).
+#   docker compose -f docker-compose.yml -f docker-compose.carga.yml up -d
+#   ./scripts/carga/rodar.sh
+services:
+  web:
+    volumes:
+      - ./web/nginx/sem-limite-taxa.conf:/etc/nginx/limite-taxa.conf:ro

@@ -1,0 +1,17 @@
+# Reproduz uma gravação do feed (feita com `npm run feed -- gravar`, ver README) no lugar
+# da simulação fictícia. A eleição configurada precisa ser a mesma da gravação.
+#
+#   REPLAY_DIR=./gravacoes/2026-10-04 ELEICAO=<código> \
+#     docker compose -f docker-compose.yml -f docker-compose.replay.yml up -d
+services:
+  mock-tse:
+    environment:
+      MODO: replay
+      REPLAY_DIR: /gravacao
+      REPLAY_VELOCIDADE: ${REPLAY_VELOCIDADE:-10}
+    volumes:
+      - ${REPLAY_DIR:?defina REPLAY_DIR com o diretório da gravação}:/gravacao:ro
+
+  ingestor:
+    environment:
+      FONTE_NOME: replay

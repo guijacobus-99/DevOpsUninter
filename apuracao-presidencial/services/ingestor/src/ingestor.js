@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import { ABRANGENCIAS } from './config.js';
 import { normalizar } from './normalizar.js';
-import { validar } from './validar.js';
+import { REGRAS, validar } from './validar.js';
 import * as m from './metricas.js';
 
 const sha256 = (texto) => createHash('sha256').update(texto).digest('hex');
@@ -28,6 +28,7 @@ export function criarIngestor({ buscar, repo, pub, config, log }) {
   const estado = new Map(); // abrangência -> { modelo, hash, etag, ultimaModificacao }
   const esperado = { eleicao: config.eleicao, turno: config.turno };
   let ultimaRepublicacao = Date.now();
+  m.inicializarSeries(ABRANGENCIAS, REGRAS);
 
   function aceitar(abr, modelo) {
     m.pctSecoes.set({ abrangencia: abr }, modelo.secoes.pct);

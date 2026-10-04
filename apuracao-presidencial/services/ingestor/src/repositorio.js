@@ -6,6 +6,7 @@ export function criarRepositorio(databaseUrl) {
   return {
     ping: () => pool.query('SELECT 1'),
     fechar: () => pool.end(),
+    executar: (sql) => pool.query(sql),
 
     // Camada bruta (auditoria): todo snapshot novo, aceito ou não, com o payload original.
     // Idempotente: o mesmo conteúdo (hash) nunca é gravado duas vezes por abrangência.
