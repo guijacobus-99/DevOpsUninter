@@ -1,0 +1,314 @@
+.pagina {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------- cabeçalho ---------- */
+.cabecalho {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px 24px;
+}
+.cabecalho h1 {
+  font-size: 1.5rem;
+  font-weight: 650;
+}
+.subtitulo {
+  margin: 4px 0 0;
+  color: var(--texto-2);
+  font-size: 0.9rem;
+}
+.seletor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8rem;
+  color: var(--texto-2);
+}
+.seletor select {
+  font: inherit;
+  font-size: 0.95rem;
+  color: var(--texto);
+  background: var(--superficie);
+  border: 1px solid var(--eixo);
+  border-radius: 8px;
+  padding: 8px 12px;
+  min-width: 220px;
+}
+
+/* ---------- faixas de aviso ---------- */
+.faixa {
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  border-left: 4px solid;
+}
+.faixa-simulada {
+  background: var(--simulado-fundo);
+  border-color: var(--simulado-borda);
+  font-weight: 600;
+}
+.faixa-aviso {
+  background: var(--aviso-fundo);
+  border-color: var(--aviso-borda);
+}
+
+/* ---------- conteúdo ---------- */
+.conteudo {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  transition: opacity 0.2s;
+}
+.conteudo.atualizando {
+  opacity: 0.55;
+}
+.grade {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 16px;
+}
+@media (max-width: 760px) {
+  .grade {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.cartao {
+  background: var(--superficie);
+  border: 1px solid var(--borda);
+  border-radius: 12px;
+  padding: 20px;
+  min-width: 0;
+}
+.cartao h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--texto-2);
+  margin-bottom: 16px;
+}
+.nota {
+  margin: 12px 0 0;
+  font-size: 0.8rem;
+  color: var(--texto-mudo);
+}
+
+/* ---------- progresso (número herói + medidor) ---------- */
+.heroi {
+  margin: 0 0 12px;
+  font-size: 3.25rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.medidor {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--trilho);
+  overflow: hidden;
+}
+.medidor-preenchido {
+  height: 100%;
+  background: var(--destaque);
+  border-radius: 0 5px 5px 0;
+  transition: width 0.6s ease;
+}
+
+/* ---------- barras dos candidatos ---------- */
+.barras {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.barra-linha {
+  position: relative;
+  outline: none;
+  border-radius: 6px;
+}
+.barra-linha:focus-visible {
+  box-shadow: 0 0 0 2px var(--destaque);
+}
+.barra-rotulo {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 0.92rem;
+}
+.barra-nome {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.barra-numero {
+  color: var(--texto-mudo);
+  font-weight: 400;
+}
+.barra-valor {
+  margin-left: auto;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.selo {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--eixo);
+  color: var(--texto-2);
+  white-space: nowrap;
+}
+.barra-trilho {
+  position: relative;
+  height: 20px;
+  border-bottom: 1px solid var(--eixo);
+}
+.barra {
+  width: var(--pct);
+  height: 100%;
+  border-radius: 0 4px 4px 0; /* ponta arredondada, base reta */
+  transition: width 0.6s ease, filter 0.15s;
+}
+.marca-maioria {
+  position: absolute;
+  left: 50%;
+  top: -3px;
+  bottom: -3px;
+  width: 1px;
+  background: var(--texto-mudo);
+}
+.barra-linha:hover .barra,
+.barra-linha:focus-visible .barra {
+  filter: brightness(1.12);
+}
+
+/* dica (tooltip) por barra, logo após a ponta da barra: valor primeiro, rótulo depois */
+.dica {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: min(calc(var(--pct) + 8px), calc(100% - 190px));
+  transform: translateY(-50%);
+  white-space: nowrap;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  background: var(--superficie);
+  border: 1px solid var(--borda);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+.dica span {
+  color: var(--texto-2);
+}
+.barra-linha:hover .dica,
+.barra-linha:focus-visible .dica {
+  display: flex;
+}
+
+/* ---------- indicadores ---------- */
+.indicadores {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 760px) {
+  .indicadores {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.indicador {
+  background: var(--superficie);
+  border: 1px solid var(--borda);
+  border-radius: 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.indicador-rotulo {
+  font-size: 0.82rem;
+  color: var(--texto-2);
+}
+.indicador-valor {
+  font-size: 1.35rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.indicador-pct {
+  font-size: 0.85rem;
+  color: var(--texto-mudo);
+}
+
+/* ---------- tabela por UF ---------- */
+.tabela-rolagem {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+th,
+td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--grade);
+  white-space: nowrap;
+}
+thead th {
+  color: var(--texto-mudo);
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+tbody th {
+  font-weight: 500;
+}
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+tr.selecionada {
+  background: color-mix(in srgb, var(--destaque) 10%, transparent);
+}
+.chave {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 8px;
+  vertical-align: -1px;
+}
+.link {
+  font: inherit;
+  color: var(--texto);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--eixo);
+  text-underline-offset: 3px;
+}
+.link:hover {
+  text-decoration-color: var(--texto);
+}
+
+.rodape {
+  font-size: 0.8rem;
+  color: var(--texto-mudo);
+  padding: 8px 0 24px;
+}

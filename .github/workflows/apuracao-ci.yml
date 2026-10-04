@@ -1,0 +1,92 @@
+name: apuracao-ci
+
+on:
+  push:
+    paths:
+      - 'apuracao-presidencial/**'
+      - '.github/workflows/apuracao-ci.yml'
+  pull_request:
+    paths:
+      - 'apuracao-presidencial/**'
+      - '.github/workflows/apuracao-ci.yml'
+
+concurrency:
+  group: apuracao-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: apuracao-presidencial
+
+jobs:
+  testes:
+    name: testes (${{ matrix.servico }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        servico: [mock-tse, ingestor, api]
+    defaults:
+      run:
+        working-directory: apuracao-presidencial/services/${{ matrix.servico }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apuracao-presidencial/services/${{ matrix.servico }}/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: Auditoria de dependências de produção
+        run: npm audit --omit=dev --audit-level=high
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apuracao-presidencial/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apuracao-presidencial/web/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  configuracao:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose válido
+        run: docker compose config -q
+      - name: Prometheus e regras de alerta válidos
+        run: >-
+          docker run --rm -v "$PWD/infra/prometheus:/etc/prometheus:ro"
+          --entrypoint promtool prom/prometheus:v3.5.0
+          check config /etc/prometheus/prometheus.yml
+      - name: Dashboard do Grafana é JSON válido
+        run: python3 -m json.tool infra/grafana/dashboards/apuracao.json > /dev/null
+
+  ponta-a-ponta:
+    needs: [testes, web, configuracao]
+    runs-on: ubuntu-latest
+    env:
+      SIM_DURACAO_S: '120'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Subir o ambiente
+        run: docker compose up -d --build --wait --wait-timeout 300
+      - name: Teste de fumaça
+        run: ./scripts/smoke-test.sh
+      - name: Logs em caso de falha
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+      - name: Derrubar o ambiente
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,18 @@
+{
+  "name": "api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API somente leitura que serve os resultados da memória (origem da CDN)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ioredis": "^5.11.1",
+    "prom-client": "^15.1.3"
+  }
+}

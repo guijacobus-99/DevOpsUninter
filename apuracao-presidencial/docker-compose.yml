@@ -1,0 +1,130 @@
+# Ambiente local completo da apuração.
+#   docker compose up -d --build
+#   Site: http://localhost:8080   Grafana: http://localhost:3001   Prometheus: http://localhost:9090
+name: apuracao
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: '10m', max-file: '3' }
+
+services:
+  # Simulador do feed do TSE (dados fictícios). Em produção, o ingestor aponta para o TSE.
+  mock-tse:
+    build: ./services/mock-tse
+    environment:
+      ELEICAO: ${ELEICAO:-9001}
+      TURNO: ${TURNO:-1}
+      SIM_DURACAO_S: ${SIM_DURACAO_S:-900}
+      SIM_INTERVALO_GERACAO_S: ${SIM_INTERVALO_GERACAO_S:-10}
+      FALHA_TAXA_5XX: ${FALHA_TAXA_5XX:-0.02}
+      FALHA_TAXA_INCONSISTENTE: ${FALHA_TAXA_INCONSISTENTE:-0.005}
+    ports: ['127.0.0.1:8081:8080']
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/health']
+      interval: 5s
+      retries: 10
+    logging: *logging
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: apuracao
+      POSTGRES_USER: apuracao
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apuracao}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports: ['127.0.0.1:5432:5432'] # para consultas SQL locais
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U apuracao -d apuracao']
+      interval: 5s
+      retries: 10
+    logging: *logging
+
+  redis:
+    image: redis:7.4-alpine
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory', '256mb', '--maxmemory-policy', 'noeviction']
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      retries: 10
+    logging: *logging
+
+  ingestor:
+    build: ./services/ingestor
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      mock-tse: { condition: service_healthy }
+    environment:
+      ELEICAO: ${ELEICAO:-9001}
+      TURNO: ${TURNO:-1}
+      FONTE_URL_TEMPLATE: ${FONTE_URL_TEMPLATE:-http://mock-tse:8080/oficial/ele2026/{eleicao}/dados-simplificados/{abr}/{abr}-c0001-e{eleicao6}-r.json}
+      FONTE_NOME: ${FONTE_NOME:-simulada}
+      INTERVALO_COLETA_MS: ${INTERVALO_COLETA_MS:-5000}
+      DATABASE_URL: postgres://apuracao:${POSTGRES_PASSWORD:-apuracao}@postgres:5432/apuracao
+      REDIS_URL: redis://redis:6379
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:9100/health/live']
+      interval: 10s
+    logging: *logging
+
+  # Origem da CDN: somente leitura, sem estado próprio — escala na horizontal.
+  api:
+    build: ./services/api
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    depends_on:
+      redis: { condition: service_healthy }
+    environment:
+      REDIS_URL: redis://redis:6379
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/health/live']
+      interval: 5s
+      retries: 10
+    logging: *logging
+
+  # Front-end estático + gateway que faz o papel da CDN (cache de 5 s, coalescência, stale).
+  web:
+    build: ./web
+    restart: unless-stopped
+    depends_on:
+      api: { condition: service_healthy }
+    ports: ['8080:8080']
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:8080/healthz']
+      interval: 10s
+    logging: *logging
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    volumes:
+      - ./infra/prometheus:/etc/prometheus:ro
+      - promdata:/prometheus
+    ports: ['127.0.0.1:9090:9090']
+    logging: *logging
+
+  grafana:
+    image: grafana/grafana-oss:12.1.1
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/apuracao.json
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ['127.0.0.1:3001:3000']
+    logging: *logging
+
+volumes:
+  pgdata:
+  redisdata:
+  promdata:

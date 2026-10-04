@@ -1,0 +1,12 @@
+{
+  "name": "mock-tse",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Simulador do feed de resultados do TSE (dados fictícios) para testes locais",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}

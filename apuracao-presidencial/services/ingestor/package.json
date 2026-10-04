@@ -1,0 +1,19 @@
+{
+  "name": "ingestor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Coleta, valida, persiste e publica os resultados da apuração",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ioredis": "^5.11.1",
+    "pg": "^8.23.1",
+    "prom-client": "^15.1.3"
+  }
+}

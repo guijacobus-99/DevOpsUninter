@@ -1,0 +1,116 @@
+groups:
+  # ---------------------------------------------------------------- frescor e qualidade do dado
+  - name: apuracao-dados
+    rules:
+      - alert: ResultadoNacionalDesatualizado
+        expr: |
+          ingestor_dados_idade_segundos{abrangencia="BR"} > 120
+          and on (abrangencia) apuracao_secoes_totalizadas_pct{abrangencia="BR"} < 100
+        for: 1m
+        labels: { severidade: critica }
+        annotations:
+          resumo: Resultado nacional sem atualização há mais de 2 minutos
+          descricao: >-
+            O último snapshot BR aceito foi gerado há {{ $value | humanizeDuration }} e a apuração
+            ainda não terminou. Verificar disponibilidade da fonte e rejeições de validação.
+
+      - alert: ResultadoUFDesatualizado
+        expr: |
+          ingestor_dados_idade_segundos{abrangencia!="BR"} > 300
+          and on (abrangencia) apuracao_secoes_totalizadas_pct < 100
+        for: 2m
+        labels: { severidade: alta }
+        annotations:
+          resumo: '{{ $labels.abrangencia }} sem atualização há mais de 5 minutos'
+
+      - alert: SnapshotRejeitado
+        expr: sum by (abrangencia) (increase(ingestor_snapshots_total{status="rejeitado"}[5m])) > 0
+        labels: { severidade: media }
+        annotations:
+          resumo: 'Snapshot de {{ $labels.abrangencia }} rejeitado pela validação'
+          descricao: Consultar snapshot_bruto WHERE status = 'rejeitado' para ver o motivo e o payload.
+
+      - alert: RejeicaoPersistente
+        expr: |
+          sum by (abrangencia) (increase(ingestor_snapshots_total{status="rejeitado"}[5m])) > 0
+          unless on (abrangencia) sum by (abrangencia) (increase(ingestor_snapshots_total{status="aceito"}[5m])) > 0
+        for: 2m
+        labels: { severidade: critica }
+        annotations:
+          resumo: '{{ $labels.abrangencia }}: só snapshots rejeitados nos últimos 5 minutos'
+          descricao: Possível mudança de layout do TSE ou eleição/turno mal configurados.
+
+      - alert: RegressaoNaApuracao
+        expr: sum by (abrangencia, regra) (increase(ingestor_violacoes_total{severidade="alerta"}[10m])) > 0
+        labels: { severidade: media }
+        annotations:
+          resumo: '{{ $labels.abrangencia }}: {{ $labels.regra }} (publicado, requer análise)'
+
+      - alert: DivergenciaBRxUFs
+        expr: apuracao_divergencia_consolidacao > 0
+        for: 5m
+        labels: { severidade: media }
+        annotations:
+          resumo: 'BR diverge da soma das UFs em {{ $labels.campo }} há 5 minutos'
+
+  # ---------------------------------------------------------------- saúde do pipeline
+  - name: apuracao-pipeline
+    rules:
+      - alert: IngestorParado
+        expr: time() - ingestor_ultimo_ciclo_timestamp_segundos > 30 or up{job="ingestor"} == 0
+        for: 1m
+        labels: { severidade: critica }
+        annotations:
+          resumo: Ingestor sem completar ciclos de coleta
+
+      - alert: FonteComFalhas
+        expr: |
+          sum(rate(ingestor_coletas_total{resultado=~"erro_.*"}[2m]))
+            / sum(rate(ingestor_coletas_total[2m])) > 0.2
+        for: 2m
+        labels: { severidade: alta }
+        annotations:
+          resumo: 'Mais de 20% das requisições à fonte falhando ({{ $value | humanizePercentage }})'
+
+      - alert: FalhaDePersistencia
+        expr: sum by (destino) (rate(ingestor_falhas_persistencia_total[2m])) > 0
+        for: 2m
+        labels: { severidade: critica }
+        annotations:
+          resumo: 'Falhas contínuas gravando em {{ $labels.destino }}'
+
+  # ---------------------------------------------------------------- API (origem da CDN)
+  - name: apuracao-api
+    rules:
+      - alert: ApiErros5xx
+        expr: |
+          sum(rate(http_requisicoes_total{status=~"5.."}[5m]))
+            / sum(rate(http_requisicoes_total[5m])) > 0.01
+        for: 5m
+        labels: { severidade: alta }
+        annotations:
+          resumo: 'Taxa de 5xx da API acima de 1% ({{ $value | humanizePercentage }})'
+
+      - alert: ApiLatenciaAlta
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(http_requisicao_duracao_segundos_bucket{rota=~"/api/.*"}[5m]))) > 0.1
+        for: 5m
+        labels: { severidade: media }
+        annotations:
+          resumo: 'p99 da API acima de 100 ms'
+
+      - alert: ApiReplicaFora
+        expr: up{job="api"} == 0
+        for: 1m
+        labels: { severidade: alta }
+        annotations:
+          resumo: 'Réplica {{ $labels.instance }} da API fora do ar'
+
+      - alert: ApiServindoDadoAntigo
+        expr: |
+          max(api_dados_idade_segundos{abrangencia="BR"})
+            - max(ingestor_dados_idade_segundos{abrangencia="BR"}) > 30
+        for: 2m
+        labels: { severidade: alta }
+        annotations:
+          resumo: Alguma réplica da API está atrás do ingestor (pub/sub ou ressincronização falhando)
