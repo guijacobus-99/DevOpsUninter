@@ -132,6 +132,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SIM_DURACAO_S: '120'
+      # A CLI de validação reprova arquivos inconsistentes (é o papel dela), então a injeção de
+      # inconsistência deixaria o job aleatório. Os 503 continuam ligados e são repetidos pela CLI.
+      FALHA_TAXA_INCONSISTENTE: '0'
     steps:
       - uses: actions/checkout@v4
       - name: Subir o ambiente

@@ -57,9 +57,21 @@ const template =
   opcoes['url-template'] ?? '{base}/ele{ano}/{eleicao}/dados-simplificados/{abr}/{abr}-c0001-e{eleicao6}-r.json';
 const turno = Number(opcoes.turno);
 
+const TENTATIVAS = 3;
+
+// Erros transitórios (5xx, 429, rede) são repetidos com espera crescente: na noite da eleição a
+// CDN do TSE pode falhar pontualmente, e isso não diz nada sobre o layout dos arquivos.
 async function obterJson(url, headers = {}) {
-  const resp = await fetch(url, { headers: { 'User-Agent': 'apuracao-presidencial-feed/1.0', ...headers }, signal: AbortSignal.timeout(10_000) });
-  return resp;
+  for (let tentativa = 1; ; tentativa++) {
+    try {
+      const resp = await fetch(url, { headers: { 'User-Agent': 'apuracao-presidencial-feed/1.0', ...headers }, signal: AbortSignal.timeout(10_000) });
+      const transitorio = resp.status >= 500 || resp.status === 429;
+      if (!transitorio || tentativa === TENTATIVAS) return Object.assign(resp, { tentativas: tentativa });
+    } catch (err) {
+      if (tentativa === TENTATIVAS) throw err;
+    }
+    await dormir(1000 * tentativa);
+  }
 }
 
 // O layout do ele-c.json não está documentado aqui; em vez de assumir uma estrutura, procura
@@ -133,7 +145,7 @@ async function comandoValidar() {
       const resp = await obterJson(url);
       if (!resp.ok) {
         falhas++;
-        linhas.push({ abr, http: resp.status, secoes: '', geradoEm: '', problemas: url });
+        linhas.push({ abr, http: resp.status, tentativas: resp.tentativas, secoes: '', geradoEm: '', problemas: url });
         continue;
       }
       const corpo = await resp.text();
@@ -147,6 +159,7 @@ async function comandoValidar() {
       linhas.push({
         abr,
         http: resp.status,
+        tentativas: resp.tentativas,
         secoes: `${modelo.secoes.pct}%`,
         geradoEm: modelo.geradoEm ?? '?',
         problemas: [...bloqueantes, ...alertas].map((v) => `${v.regra}: ${v.detalhe}`).join(' | ') || 'ok',
