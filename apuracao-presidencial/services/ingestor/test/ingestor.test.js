@@ -86,3 +86,12 @@ test('falha no Redis não avança o estado: o mesmo snapshot é reprocessado sem
   assert.equal(t.brutos.length, 1);
   assert.equal(t.apuracoes.length, 1);
 });
+
+test('séries de contadores nascem zeradas, para o primeiro incremento ser visto pelo increase()', async () => {
+  montar();
+  const { registro } = await import('../src/metricas.js');
+  const texto = await registro.metrics();
+  assert.match(texto, /ingestor_snapshots_total\{abrangencia="RR",status="rejeitado"\} 0/);
+  assert.match(texto, /ingestor_violacoes_total\{abrangencia="ZZ",regra="regressao_votos",severidade="alerta"\} 0/);
+  assert.match(texto, /ingestor_falhas_persistencia_total\{destino="postgres"\} \d/);
+});

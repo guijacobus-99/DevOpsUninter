@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "feed": "node src/cli/feed.js"
   },
   "dependencies": {
     "ioredis": "^5.11.1",

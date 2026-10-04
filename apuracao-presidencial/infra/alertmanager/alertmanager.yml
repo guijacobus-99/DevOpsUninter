@@ -1,0 +1,53 @@
+# Roteamento de alertas. Localmente, os dois destinos são um receptor que só imprime os alertas
+# no log (`docker compose logs -f receptor-alertas`). Em produção, troque pelos blocos comentados.
+route:
+  receiver: sala-de-guerra
+  # Uma notificação por tipo de alerta, listando todas as UFs afetadas. Agrupar também por
+  # abrangência gerou 50 notificações num único incidente (teste com reinício da fonte).
+  group_by: [alertname]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 30m
+  routes:
+    # Crítico acorda o plantão e repete com mais frequência...
+    - matchers: ['severidade = critica']
+      receiver: plantao
+      group_wait: 5s
+      repeat_interval: 5m
+      continue: true
+    # ...e tudo (crítico inclusive) aparece na sala de guerra. Esta rota precisa existir:
+    # com `continue`, o Alertmanager segue para as rotas irmãs, não volta para o receptor da raiz.
+    - receiver: sala-de-guerra
+
+receivers:
+  - name: sala-de-guerra
+    webhook_configs:
+      - url: http://receptor-alertas:8080/sala-de-guerra
+        send_resolved: true
+    # slack_configs:
+    #   - api_url_file: /etc/alertmanager/segredos/slack-webhook
+    #     channel: '#apuracao-sala-de-guerra'
+    #     send_resolved: true
+    #     title: '{{ .CommonLabels.alertname }} ({{ .Status }})'
+    #     text: '{{ range .Alerts }}{{ .Annotations.resumo }}{{ "\n" }}{{ end }}'
+
+  - name: plantao
+    webhook_configs:
+      - url: http://receptor-alertas:8080/plantao
+        send_resolved: true
+    # pagerduty_configs:
+    #   - routing_key_file: /etc/alertmanager/segredos/pagerduty
+    #     description: '{{ .CommonAnnotations.resumo }}'
+
+# Evita avalanche: quando a causa está identificada, os sintomas não notificam.
+inhibit_rules:
+  # Ingestor parado explica dado desatualizado.
+  - source_matchers: ['alertname = IngestorParado']
+    target_matchers: ['alertname =~ "Resultado.*Desatualizado"']
+  # Sem líder também explica dado desatualizado.
+  - source_matchers: ['alertname = IngestorSemLider']
+    target_matchers: ['alertname =~ "Resultado.*Desatualizado|IngestorParado"']
+  # Rejeição persistente já cobre as rejeições pontuais da mesma abrangência.
+  - source_matchers: ['alertname = RejeicaoPersistente']
+    target_matchers: ['alertname = SnapshotRejeitado']
+    equal: [abrangencia]

@@ -125,14 +125,15 @@ flowchart LR
 
 | Componente | Responsabilidade | Tecnologia (referência) | Estado | Escala |
 |---|---|---|---|---|
-| **Ingestor** (`services/ingestor`) | Busca os 29 arquivos do TSE, deduplica, normaliza, valida, grava a auditoria e publica. | Node.js 22, `pg`, `ioredis`, `prom-client` | Memória (último hash/ETag/modelo), reconstruído do Postgres no boot | 1 instância ativa (+1 em espera em produção) |
+| **Ingestor** (`services/ingestor`) | Busca os 29 arquivos do TSE, deduplica, normaliza, valida, grava a auditoria e publica. | Node.js 22, `pg`, `ioredis`, `prom-client` | Memória (último hash/ETag/modelo), reconstruído do Postgres no boot | 1 líder + 1 em espera (advisory lock no Postgres; failover medido em ~5 s) |
 | **PostgreSQL** | Trilha de auditoria (payload bruto) e histórico normalizado para análises. **Fora do caminho de leitura.** | PostgreSQL 17 | Persistente | Vertical; Multi-AZ em produção |
 | **Redis** | Guarda o snapshot atual de cada abrangência e notifica as APIs por pub/sub. | Redis 7 (AOF ligado) | Snapshot atual (≈ 50 KB no total) | Um nó primário + réplica |
 | **API** (`services/api`) | Serve os JSONs a partir de uma cópia em memória, com ETag e cabeçalhos de cache para a CDN. | Node.js 22 (`node:http`, sem framework) | Sem estado (cópia em memória descartável) | Horizontal, sem limite prático |
 | **Borda** (`web/nginx`) | Cache curto, coalescência de requisições, servir dado velho se a origem cair, limitar taxa por IP, servir o front. | Local: nginx · Produção: CDN + WAF | Cache efêmero | Gerenciada pela CDN |
 | **Front-end** (`web`) | SPA que faz polling da API e exibe os resultados. | React 19 + Vite, arquivos estáticos | Nenhum | Estático na CDN |
-| **Observabilidade** (`infra/`) | Métricas, alertas e painéis de saúde do pipeline e qualidade do dado. | Prometheus, Grafana (Alertmanager em produção) | Séries temporais | — |
-| **Simulador do TSE** (`services/mock-tse`) | Só para desenvolvimento e CI: imita o feed do TSE com dados fictícios e injeção de falhas. | Node.js, sem dependências | — | — |
+| **Observabilidade** (`infra/`) | Métricas, alertas, roteamento de notificações e painéis de saúde do pipeline e qualidade do dado. | Prometheus, Alertmanager, Grafana | Séries temporais | — |
+| **Simulador do TSE** (`services/mock-tse`) | Só para desenvolvimento e CI: imita o feed do TSE com dados fictícios e injeção de falhas, ou reproduz uma gravação real (modo replay). | Node.js, sem dependências | — | — |
+| **CLI do feed** (`services/ingestor/src/cli/feed.js`) | Valida o feed real contra o adaptador e as regras de qualidade; grava o feed para replay. | Node.js | Arquivos gravados | — |
 
 ## 6. Fluxo de um snapshot
 
@@ -293,8 +294,10 @@ erDiagram
   apuracao ||--|{ apuracao_candidato : "tem"
 ```
 
-Esquema completo em [`infra/postgres/init.sql`](../infra/postgres/init.sql), com as views
-`vw_ultima_apuracao`, `vw_atraso_ingestao` e `vw_evolucao_candidato`. Exemplos de consulta:
+Esquema completo em [`services/ingestor/sql/001_esquema.sql`](../services/ingestor/sql/001_esquema.sql),
+com as views `vw_ultima_apuracao`, `vw_atraso_ingestao` e `vw_evolucao_candidato`. O arquivo é
+idempotente e aplicado pelo ingestor **depois de virar líder**, no boot: a mesma migração vale para
+o compose e para o RDS, e nunca há duas instâncias aplicando DDL ao mesmo tempo. Exemplos de consulta:
 
 ```sql
 -- Atraso entre a geração no TSE e a chegada ao banco (p50 / p95 / máx) por abrangência
@@ -421,6 +424,32 @@ CDN: contratação, origin shield, coalescência ligada e teste de carga contra 
 O jitter de ±20% no polling do front-end importa: sem ele, os navegadores que abriram a página
 juntos ficam sincronizados e batem na CDN em ondas.
 
+### 11.1 Teste de carga (medido)
+
+Rodado com k6 (`scripts/carga/`) numa máquina de **4 vCPUs** que hospedava, ao mesmo tempo, o
+gerador de carga e todo o ambiente do compose. Os números são um piso, não o teto da arquitetura.
+A mistura de rotas imita o front-end (60% resultado BR, 30% resumo, 10% UFs) e cada usuário
+virtual revalida com `If-None-Match`, como o navegador.
+
+| Cenário | Vazão sustentada | Erros | p95 | p99 | Requisições que chegaram à API |
+|---|---|---|---|---|---|
+| Borda (nginx), 3.000 req/s alvo, 1 min | 210 mil requisições | 0% | 0,9 ms | 3,2 ms | **194** (99,9% absorvidas pelo cache) |
+| Borda (nginx), 10.000 req/s alvo, 45 s | ~7.300 req/s (a máquina saturou) | 0% | 77 ms | 128 ms | **154** |
+| Origem direta (2 réplicas da API, sem cache), 4.000 req/s, 45 s | 220 mil requisições | 0% | 1,1 ms | 3,9 ms | 220 mil (dividido ~50/50 entre as réplicas) |
+
+O que o teste confirma:
+
+- **A coalescência funciona:** com milhares de requisições por segundo na borda, a origem recebe
+  poucas por segundo (cerca de uma por URL a cada 5 s), independentemente da carga.
+- **A origem é barata:** 2 réplicas, servindo da memória, aguentaram 4.000 req/s com p99 < 4 ms
+  usando ~40 MB de RAM cada.
+- **O limite medido foi a máquina de teste**, não um componente. O próximo passo é repetir contra
+  o CloudFront em homologação, com geradores distribuídos.
+
+Para rodar: `docker compose -f docker-compose.yml -f docker-compose.carga.yml up -d` (desliga o
+limite por IP, já que o k6 sai de um só IP) e `TAXA=3000 ./scripts/carga/rodar.sh`
+(`ALVO=origem` para ir direto na API).
+
 ## 12. Resiliência e modos de falha
 
 ✔ = cenário exercitado localmente com esta implementação.
@@ -431,7 +460,8 @@ juntos ficam sincronizados e batem na CDN em ondas.
 | TSE publica arquivo inconsistente | Nenhum: o arquivo não é publicado | Regras bloqueantes; o próximo arquivo bom passa normalmente | `SnapshotRejeitado` ✔ |
 | CDN do TSE devolve versão antiga | Nenhum | Regra "nunca voltar no tempo" | Status `desatualizado` no banco (teste unitário) |
 | TSE muda o layout do arquivo | Dado congela no último válido | Esquema bloqueia; corrigir o adaptador `normalizar.js` e publicar | `RejeicaoPersistente` (crítico) |
-| Ingestor cai | Dado congela no último válido | Reinício automático; no boot, reidrata a memória e o Redis a partir do Postgres | `IngestorParado` |
+| Ingestor líder cai | Nenhum (pausa de ~5 s nas atualizações) | A instância em espera obtém o advisory lock e assume (4,5 s medidos com `docker kill`); se o próprio líder reiniciar primeiro, ele retoma o lock. Ao assumir, reidrata a memória e o Redis a partir do Postgres | `IngestorSemLider`, `IngestorParado` ✔ |
+| Ingestor perde a conexão do lock | Nenhum | O processo sai imediatamente (sem lock não há garantia de escritor único) e volta como candidato; uma sobreposição breve é inofensiva porque as gravações são idempotentes | `IngestorComDoisLideres` |
 | PostgreSQL fora | Dado congela no último válido | Postgres em Multi-AZ (failover ~1 min). Publicar exige auditoria ([ADR-4](#adr-4-auditoria-é-pré-requisito-para-publicar)) | `FalhaDePersistencia` |
 | Redis perde os dados | Nenhum: as APIs mantêm a cópia em memória | AOF + republicação periódica pelo ingestor (restaurado em < 30 s no teste) | Log e `FalhaDePersistencia` ✔ |
 | Mensagem de pub/sub perdida | Uma réplica atrasa até 30 s | Ressincronização completa a cada 30 s | `ApiServindoDadoAntigo` |
@@ -454,7 +484,8 @@ juntos ficam sincronizados e batem na CDN em ondas.
 
 ### 13.2 Métricas
 
-Além das métricas padrão de processo Node.js:
+Além das métricas padrão de processo Node.js. Todas as combinações conhecidas de rótulos dos
+contadores nascem com valor 0 (ver 13.5).
 
 | Métrica | Tipo | Para quê |
 |---|---|---|
@@ -465,6 +496,7 @@ Além das métricas padrão de processo Node.js:
 | `ingestor_dados_idade_segundos{abrangencia}` | gauge | **O sinal principal:** idade do último dado aceito |
 | `ingestor_falhas_persistencia_total{destino}` | contador | Postgres / Redis |
 | `ingestor_ultimo_ciclo_timestamp_segundos` | gauge | Detecta ingestor travado |
+| `ingestor_lider` | gauge | 1 no líder, 0 em espera (a soma deve ser exatamente 1) |
 | `apuracao_secoes_totalizadas_pct{abrangencia}` | gauge | Progresso da apuração |
 | `apuracao_votos_candidato{abrangencia,candidato}` | gauge | Curva da apuração no Grafana |
 | `apuracao_divergencia_consolidacao{campo}` | gauge | BR × soma das UFs |
@@ -473,8 +505,8 @@ Além das métricas padrão de processo Node.js:
 
 ### 13.3 Alertas
 
-Definidos em [`infra/prometheus/alertas.yml`](../infra/prometheus/alertas.yml) (validados com
-`promtool` no CI):
+Definidos em [`infra/prometheus/alertas.yml`](../infra/prometheus/alertas.yml) (16 regras,
+validadas com `promtool` no CI):
 
 | Alerta | Severidade | Dispara quando |
 |---|---|---|
@@ -484,7 +516,10 @@ Definidos em [`infra/prometheus/alertas.yml`](../infra/prometheus/alertas.yml) (
 | `SnapshotRejeitado` | média | Qualquer rejeição (investigar em `snapshot_bruto`) |
 | `RegressaoNaApuracao` | média | Regra de alerta violada (dado publicado, requer análise) |
 | `DivergenciaBRxUFs` | média | BR ≠ soma das UFs por 5 min |
-| `IngestorParado` | crítica | Sem ciclo completo há > 30 s ou alvo fora |
+| `IngestorParado` | crítica | Líder sem ciclo completo há > 30 s, ou nenhuma instância no ar |
+| `IngestorSemLider` | crítica | Ninguém segura o lock por 30 s (failover falhou) |
+| `IngestorComDoisLideres` | crítica | Mais de uma instância se declara líder por 30 s |
+| `IngestorSemEspera` | média | Só uma instância por 5 min (não há quem assuma) |
 | `FonteComFalhas` | alta | > 20% das coletas falhando por 2 min |
 | `FalhaDePersistencia` | crítica | Falhas contínuas no Postgres ou Redis |
 | `ApiErros5xx` | alta | > 1% de 5xx por 5 min |
@@ -495,6 +530,17 @@ Definidos em [`infra/prometheus/alertas.yml`](../infra/prometheus/alertas.yml) (
 Os alertas de frescor só disparam com a apuração **abaixo de 100%**: depois que tudo foi
 totalizado o TSE para de gerar arquivos, e a idade do dado cresce sem que isso seja problema.
 
+**Roteamento** ([`infra/alertmanager/alertmanager.yml`](../infra/alertmanager/alertmanager.yml)):
+tudo vai para a sala de guerra; o que é crítico também aciona o plantão, com repetição a cada
+5 min. Localmente os dois destinos são um receptor que imprime os alertas
+(`docker compose logs -f receptor-alertas`); os blocos de Slack e PagerDuty estão comentados no
+arquivo. Regras de inibição evitam avalanche: com `IngestorParado` ou `IngestorSemLider`
+disparados, os alertas de dado desatualizado (sintoma) não notificam; `RejeicaoPersistente`
+silencia `SnapshotRejeitado` da mesma UF. As notificações são agrupadas por tipo de alerta.
+
+Validado de ponta a ponta: com a fonte desligada, `FonteComFalhas` chegou à sala de guerra e
+`ResultadoNacionalDesatualizado` ao plantão em ~3 min; ao religar, chegaram as resoluções.
+
 ### 13.4 Logs e painéis
 
 - **Logs estruturados em JSON**, uma linha por evento, com `servico`, `abrangencia`, `motivo` etc.
@@ -504,8 +550,22 @@ totalizado o TSE para de gerar arquivos, e a idade do dado cresce sem que isso s
 - **Painel do Grafana** provisionado automaticamente (`infra/grafana/dashboards/apuracao.json`),
   com três blocos: apuração (progresso, curva de votos, % por UF), ingestão e qualidade
   (coletas por resultado, snapshots por desfecho, violações por regra, idade do dado,
-  latência do TSE, divergência) e API (req/s por status, latência p50/p95/p99, idade do dado
-  por réplica).
+  latência do TSE, divergência), API (req/s por status, latência p50/p95/p99, idade do dado
+  por réplica) e plataforma (líder do ingestor, instâncias, réplicas, alertas disparados).
+
+### 13.5 Lições dos testes de monitoramento
+
+Três problemas só apareceram exercitando os alertas de verdade, e ficam como regra para o projeto:
+
+1. **Contador que nasce no primeiro incremento não dispara alerta.** `increase()` não enxerga o
+   salto de "série inexistente" para 1, então a *primeira* rejeição ou regressão de cada UF
+   passava em silêncio (203 violações registradas, nenhum alerta). Correção: todas as séries
+   conhecidas são criadas com 0 no boot (`inicializarSeries` em `metricas.js`), com teste.
+2. **Agrupar por UF gera ruído.** Um único incidente (reinício da fonte) virou 50 notificações.
+   Agora o agrupamento é por tipo de alerta, listando as UFs afetadas.
+3. **`continue: true` não volta para o receptor da raiz.** O alerta crítico ia só para o plantão
+   e sumia da sala de guerra; foi preciso uma rota explícita para ela (verificado com
+   `amtool config routes test`).
 
 ## 14. Segurança
 
@@ -514,8 +574,9 @@ totalizado o TSE para de gerar arquivos, e a idade do dado cresce sem que isso s
 | Superfície de ataque | API somente leitura, sem autenticação nem dado pessoal. Escrita só pelo ingestor, numa rede interna. |
 | DDoS e abuso | CDN com proteção DDoS e WAF; rate limit por IP na borda (20 req/s, rajada de 40). A origem aceita tráfego só da CDN (allow-list de IPs ou cabeçalho secreto). |
 | Exposição interna | `/metrics` e `/health/*` não passam pela borda; Postgres, Redis e Prometheus não ficam expostos publicamente (no compose, só em `127.0.0.1`). |
-| Contêineres | Imagens Alpine, processos sem root (`USER node`, `nginx-unprivileged`), só dependências de produção. |
-| Cadeia de suprimentos | `npm ci` com lockfile; `npm audit` no CI. Próximo passo: varredura de imagens (Trivy), SBOM e assinatura (cosign). |
+| Contêineres | Imagens Alpine, processos sem root (`USER node`, `nginx-unprivileged`), só dependências de produção, sistema de arquivos somente leitura no ECS. O npm (com dependências próprias vulneráveis) é removido da imagem final, que roda `node` direto; a imagem do nginx aplica `apk upgrade`. |
+| Cadeia de suprimentos | `npm ci` com lockfile e `npm audit` no CI; **Trivy** nas 4 imagens (bloqueia HIGH/CRITICAL com correção disponível) e no Terraform; o CD publica as imagens com **SBOM e proveniência**. Próximo passo: assinatura (cosign). |
+| Rede na AWS | Grupos de segurança com regras mínimas: ALB só recebe do CloudFront e só envia à API; API só alcança Redis e HTTPS; Postgres só aceita o ingestor. Exceções aceitas e documentadas no código (`#trivy:ignore`): ALB público e HTTP até haver domínio próprio; saída HTTPS ampla do ingestor (o TSE fica atrás de CDN, com IPs variáveis). |
 | Segredos | Nunca no repositório. Local: `.env` (fora do Git). Produção: gerenciador de segredos (AWS Secrets Manager, Vault). |
 | Cabeçalhos HTTP | CSP restritiva (`default-src 'self'`, `frame-ancestors 'none'`), `nosniff`, `Referrer-Policy`, `Permissions-Policy`. |
 | Integridade e desinformação | O site só exibe dado validado, sempre cita o TSE e marca claramente dados simulados; o payload de cada snapshot fica guardado com hash para auditoria. Deploy imutável dificulta defacement. |
@@ -523,19 +584,20 @@ totalizado o TSE para de gerar arquivos, e a idade do dado cresce sem que isso s
 
 ## 15. Implantação em produção
 
-Mapeamento da implementação local para a nuvem (AWS como exemplo; há equivalentes diretos em
-GCP e Azure):
+Implementado em Terraform em [`infra/terraform/`](../infra/terraform) (validado com
+`terraform validate` e Trivy; ainda não aplicado numa conta real). Região padrão `sa-east-1`
+(São Paulo). Mapeamento da implementação local para a AWS:
 
 | Local (`docker compose`) | Produção (exemplo AWS) |
 |---|---|
 | `web` (nginx: estáticos + cache) | **CloudFront** com Origin Shield + **S3** para os estáticos + **AWS WAF** + Shield |
-| `api` (2 réplicas) | **ECS Fargate** ou **EKS**: ≥ 3 tarefas em 3 AZs atrás de um ALB, com autoscaling |
-| `ingestor` | ECS: 1 tarefa ativa + 1 em espera, com eleição de líder via `pg_try_advisory_lock` |
+| `api` (2 réplicas) | **ECS Fargate**: 3 a 30 tarefas em 3 AZs atrás de um ALB, autoscaling por CPU (alvo 50%), circuit breaker com rollback |
+| `ingestor` (2 réplicas) | ECS Fargate: 2 tarefas (líder + espera via `pg_try_advisory_lock`) |
 | `redis` | **ElastiCache for Redis** Multi-AZ |
 | `postgres` | **RDS PostgreSQL** ou Aurora, Multi-AZ |
 | `prometheus` + `grafana` | Amazon Managed Prometheus + Managed Grafana (ou `kube-prometheus-stack`) |
 | — | **Alertmanager** → PagerDuty/Opsgenie + Slack da sala de guerra |
-| `.env` | Secrets Manager / Parameter Store |
+| `.env` | Secrets Manager: senha do RDS gerada e rotacionada pelo próprio RDS, entregue à tarefa como `PGPASSWORD` |
 | `mock-tse` | Só em CI e homologação |
 
 ```mermaid
@@ -555,38 +617,64 @@ flowchart TB
   ING -- "HTTPS via NAT" --> TSE["resultados.tse.jus.br"]
 ```
 
+Detalhes que importam na configuração:
+
+- **`PriceClass_All` no CloudFront:** as classes mais baratas não incluem os pontos de presença
+  da América do Sul, o que mandaria o público brasileiro para os EUA.
+- **Origin Shield em `sa-east-1`:** os pontos de presença pedem ao shield, e só ele pede ao ALB.
+- **Cache policy da API com TTL vindo da origem** (`min 0 / padrão 5 / máx 60`), para o
+  `max-age=5, stale-while-revalidate, stale-if-error` da API valer também no CloudFront.
+- **WAF:** limite de 6.000 requisições por IP a cada 5 min (generoso por causa do CGNAT das
+  operadoras móveis, em que muitos usuários compartilham um IP) e regras gerenciadas da AWS.
+- **ALB protegido em duas camadas:** só aceita os IPs de origem do CloudFront e, entre eles, só
+  quem envia o cabeçalho secreto `X-Origem-Cloudfront`.
+- **Front-end no S3** com versionamento (rollback do front) e `Cache-Control` por tipo de
+  arquivo: `index.html` sem cache, `assets/` imutáveis.
+
 Uma região é suficiente: a borda já esconde falhas da origem por até 10 minutos, e uma segunda
 região ativa/passiva com failover de DNS custa mais do que o risco justifica para uma janela de
 poucas horas. Se o requisito de disponibilidade subir, essa é a evolução natural.
 
 ## 16. CI/CD
 
-Implementado em [`.github/workflows/apuracao-ci.yml`](../../.github/workflows/apuracao-ci.yml):
+Dois workflows: [`apuracao-ci.yml`](../../.github/workflows/apuracao-ci.yml) em todo push e PR,
+e [`apuracao-cd.yml`](../../.github/workflows/apuracao-cd.yml) a cada merge na `main`.
 
 ```mermaid
 flowchart LR
-  P["push / PR"] --> T["Testes unitários<br/>mock-tse · ingestor · api<br/>+ npm audit"]
-  P --> W["Build do front-end"]
-  P --> C["Validação de configuração<br/>compose · promtool · JSON do Grafana"]
-  T & W & C --> E["Ponta a ponta<br/>docker compose up --wait<br/>+ smoke-test.sh"]
-  E -. "próximos passos" .-> R["Build e push das imagens<br/>(tag = SHA do commit)"]
-  R -.-> H["Deploy em homologação<br/>+ smoke test"]
-  H -.-> PR["Produção<br/>canário → 100%"]
+  subgraph CI["CI (push / PR)"]
+    T["Testes unitários<br/>+ npm audit"]
+    W["Build do front-end"]
+    C["Configuração<br/>compose · promtool · amtool · Grafana"]
+    TF["Terraform<br/>fmt · validate · Trivy"]
+    IM["Imagens<br/>build + Trivy"]
+    T & W & C --> E["Ponta a ponta<br/>compose up --wait · smoke test<br/>· CLI do feed"]
+  end
+  subgraph CD["CD (merge na main)"]
+    PUB["Build + Trivy + push no GHCR<br/>tag = SHA, SBOM, proveniência"]
+    PUB --> AP["terraform apply<br/>(ambiente producao, com aprovação)"]
+    AP --> S3["Front-end no S3"]
+    S3 --> SM["Smoke test em produção"]
+  end
+  CI --> CD
 ```
 
 O teste de ponta a ponta sobe o ambiente inteiro com o simulador e roda
-`scripts/smoke-test.sh`: valida as invariantes do JSON publicado, o cache na borda, o `404`, o
-front-end, a trilha de auditoria no Postgres e se o Prometheus está coletando todos os alvos.
+`scripts/smoke-test.sh` (invariantes do JSON publicado, cache na borda, `404`, front-end, trilha de
+auditoria no Postgres e alvos do Prometheus); depois roda a CLI de validação do feed contra o
+simulador.
 
-Para produção, o fluxo segue o tracejado: imagens imutáveis com tag pelo SHA, homologação com
-o simulador e promoção por canário. **Congelamento de mudanças na semana da eleição**: só
-correções críticas, com aprovação.
+O job de implantação só roda se o repositório tiver a variável `AWS_ROLE_ARN` (papel IAM
+assumido via OIDC, sem chave de acesso guardada no GitHub), além de `TF_STATE_BUCKET`,
+`ELEICAO` e, opcionalmente, `AWS_REGION` e `TURNO`. Ele usa o ambiente `producao` do GitHub:
+configure revisores obrigatórios para que nenhum deploy saia sem aprovação.
+**Congelamento de mudanças na semana da eleição**: só correções críticas, com aprovação.
 
 ## 17. Preparação para o dia da eleição
 
 | Quando | Atividade |
 |---|---|
-| D-60 | Ensaio com **replay dos arquivos de 2022** (gravar e reproduzir no simulador) para validar o adaptador contra o layout real. |
+| D-60 | Validar o adaptador com `npm run feed -- validar` contra o feed real e **gravar** um ciclo completo (simulado do TSE ou eleição anterior) com `npm run feed -- gravar`; reproduzir com `docker-compose.replay.yml`. |
 | D-30 | **Teste de carga** contra a CDN e a origem (k6/Gatling) com 2× o pico previsto. |
 | D-30 | **Game day**: derrubar API, Redis, Postgres e ingestor em homologação; injetar falhas com `FALHA_TAXA_5XX` e `FALHA_TAXA_INCONSISTENTE`; conferir alertas e runbooks. |
 | D-7 | Congelamento de mudanças. Revisão de capacidade e de contatos de plantão. |
@@ -626,12 +714,18 @@ correções críticas, com aprovação.
   Se o negócio preferir frescor a auditoria nesse cenário, a evolução é um modo degradado,
   ativado por flag, que publica e grava a auditoria depois.
 
-### ADR-5: Um único ingestor ativo
+### ADR-5: Um único ingestor ativo, com outro em espera
 
-- **Decisão:** uma instância ativa; em produção, outra em espera com eleição de líder (advisory
-  lock no Postgres).
+- **Decisão:** duas instâncias; só a que segura `pg_try_advisory_lock` coleta e publica. O lock
+  pertence à sessão do Postgres: se o líder morrer, ele é liberado e a outra assume.
+- **Por que o Postgres e não o Redis:** o ingestor já depende do Postgres para publicar
+  ([ADR-4](#adr-4-auditoria-é-pré-requisito-para-publicar)), então o lock não acrescenta
+  dependência; e o advisory lock é liberado pelo próprio banco quando a conexão cai, sem TTL para
+  ajustar.
 - **Consequências:** sem disputa de escrita nem ordenação distribuída; o volume (29 arquivos a
-  cada 5 s) cabe com folga numa instância.
+  cada 5 s) cabe com folga numa instância. Uma sobreposição breve entre dois líderes não corrompe
+  nada, porque as gravações são idempotentes e a regra "nunca voltar no tempo" ordena as
+  publicações.
 
 ### ADR-6: Node.js sem framework na API
 
@@ -646,7 +740,19 @@ correções críticas, com aprovação.
 
 O adaptador foi escrito com base no layout "dados simplificados" usado pelo TSE em 2022. **Não
 foi possível conferir contra o feed real a partir do ambiente onde esta implementação foi
-construída**, então o mapeamento abaixo precisa ser validado campo a campo antes do uso real:
+construída** (os domínios do TSE são bloqueados ali). A ferramenta para isso está pronta:
+
+```bash
+cd services/ingestor && npm ci
+npm run feed -- validar                       # descobre a eleição no ele-c.json
+npm run feed -- validar --eleicao <código>    # ou informa o código
+npm run feed -- gravar --saida ../../gravacoes/$(date +%F) --parar-em-100
+```
+
+O `validar` baixa os 29 arquivos, lista os campos que o adaptador espera e não vieram (e os que
+vieram e são ignorados), roda as regras de qualidade e sai com código 1 se algo falhar. O TSE
+publicou a especificação técnica dos arquivos de 2026 na página "Informações técnicas sobre a
+divulgação de resultados"; vale conferir o mapeamento abaixo contra ela:
 
 | Campo TSE | Campo no modelo | Significado |
 |---|---|---|
@@ -670,12 +776,22 @@ URL usada (padrão de 2022, a confirmar):
 (`c0001` = cargo Presidente). Verificar também os termos de uso e a frequência de consulta
 recomendada pelo TSE.
 
-### 19.2 Evoluções
+### 19.2 Para colocar no ar de verdade
 
-- **Replay de 2022** no simulador, para testar com dados reais gravados.
+- **Rodar a validação contra o TSE** (19.1) e ajustar `normalizar.js` se o layout divergir.
+- **Conta AWS:** criar o bucket de estado, o papel IAM para OIDC e as variáveis do repositório;
+  rodar `terraform plan` (nunca foi executado contra uma conta real).
+- **Domínio próprio:** certificado ACM no CloudFront e no ALB, e origem em HTTPS.
+- **TLS verificado até o RDS:** trocar `sslmode=no-verify` por `verify-full` com o bundle de CA do
+  RDS na imagem do ingestor.
+- **Observabilidade na AWS:** coletar as métricas das tarefas (ADOT → Amazon Managed Prometheus) e
+  ligar o Alertmanager ao Slack/PagerDuty.
+- **Teste de carga contra o CloudFront** em homologação, com geradores distribuídos.
+
+### 19.3 Evoluções
+
 - **2º turno:** basta configurar `TURNO=2` e o novo código de eleição; o front-end já se adapta.
 - **Mapa coroplético por UF** e, depois, **resultado por município** (5.570 arquivos: exige
   coleta escalonada e particionamento das tabelas por abrangência).
-- **Eleição de líder** do ingestor (advisory lock) e **modo degradado** do ADR-4.
-- **Varredura de imagens** (Trivy), SBOM e assinatura no pipeline; scripts de teste de carga (k6).
+- **Modo degradado** do ADR-4 e assinatura de imagens (cosign).
 - **Outros cargos** (governador, senador): o mesmo pipeline, parametrizado pelo cargo (`c0003`, …).

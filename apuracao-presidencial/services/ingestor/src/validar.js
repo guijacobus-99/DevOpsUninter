@@ -9,6 +9,19 @@ import { ABRANGENCIAS } from './config.js';
 
 const TOLERANCIA_PCT = 0.01; // o TSE arredonda percentuais para 2 casas
 
+// Catálogo das regras (usado também para pré-criar as séries de métricas com valor 0).
+export const REGRAS = [
+  ['esquema', 'bloqueante'],
+  ['soma_candidatos', 'bloqueante'],
+  ['secoes_limite', 'bloqueante'],
+  ['pct_secoes', 'bloqueante'],
+  ['comparecimento_limite', 'bloqueante'],
+  ['votos_limite', 'bloqueante'],
+  ['pct_candidato', 'bloqueante'],
+  ['regressao_secoes', 'alerta'],
+  ['regressao_votos', 'alerta'],
+];
+
 const CAMPOS_INTEIROS = [
   ['turno', (m) => m.turno],
   ['secoes.total', (m) => m.secoes.total],

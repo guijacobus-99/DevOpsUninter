@@ -1,0 +1,6 @@
+# Copie para backend.hcl (fora do Git) e ajuste. O bucket precisa existir antes do init.
+bucket       = "meu-bucket-de-estado-terraform"
+key          = "apuracao/producao.tfstate"
+region       = "sa-east-1"
+encrypt      = true
+use_lockfile = true

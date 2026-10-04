@@ -63,27 +63,92 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: docker compose válido
-        run: docker compose config -q
+      - name: docker compose válido (base e overrides)
+        run: |
+          docker compose config -q
+          docker compose -f docker-compose.yml -f docker-compose.carga.yml config -q
+          REPLAY_DIR=/tmp docker compose -f docker-compose.yml -f docker-compose.replay.yml config -q
       - name: Prometheus e regras de alerta válidos
         run: >-
           docker run --rm -v "$PWD/infra/prometheus:/etc/prometheus:ro"
           --entrypoint promtool prom/prometheus:v3.5.0
           check config /etc/prometheus/prometheus.yml
+      - name: Alertmanager válido
+        run: >-
+          docker run --rm -v "$PWD/infra/alertmanager:/cfg:ro"
+          --entrypoint amtool prom/alertmanager:v0.28.1
+          check-config /cfg/alertmanager.yml
       - name: Dashboard do Grafana é JSON válido
         run: python3 -m json.tool infra/grafana/dashboards/apuracao.json > /dev/null
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apuracao-presidencial/infra/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+      - name: Varredura de configuração insegura (Trivy)
+        run: >-
+          docker run --rm -v "$PWD:/w:ro" aquasec/trivy:0.65.0
+          config --severity HIGH,CRITICAL --exit-code 1 /w
+
+  imagens:
+    name: imagem (${{ matrix.servico }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { servico: mock-tse, contexto: services/mock-tse }
+          - { servico: ingestor, contexto: services/ingestor }
+          - { servico: api, contexto: services/api }
+          - { servico: web, contexto: web }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: apuracao-presidencial/${{ matrix.contexto }}
+          load: true
+          tags: apuracao-${{ matrix.servico }}:ci
+          cache-from: type=gha,scope=${{ matrix.servico }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.servico }}
+      - name: Varredura de vulnerabilidades (Trivy)
+        run: >-
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.65.0
+          image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --no-progress
+          apuracao-${{ matrix.servico }}:ci
 
   ponta-a-ponta:
     needs: [testes, web, configuracao]
     runs-on: ubuntu-latest
     env:
       SIM_DURACAO_S: '120'
+      # A CLI de validação reprova arquivos inconsistentes (é o papel dela), então a injeção de
+      # inconsistência deixaria o job aleatório. Os 503 continuam ligados e são repetidos pela CLI.
+      FALHA_TAXA_INCONSISTENTE: '0'
     steps:
       - uses: actions/checkout@v4
       - name: Subir o ambiente
         run: docker compose up -d --build --wait --wait-timeout 300
       - name: Teste de fumaça
         run: ./scripts/smoke-test.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: CLI de validação do feed contra o simulador
+        working-directory: apuracao-presidencial/services/ingestor
+        run: |
+          npm ci
+          npm run feed -- validar --base http://127.0.0.1:8081/oficial --eleicao 9001
       - name: Logs em caso de falha
         if: failure()
         run: docker compose logs --no-color --tail 200

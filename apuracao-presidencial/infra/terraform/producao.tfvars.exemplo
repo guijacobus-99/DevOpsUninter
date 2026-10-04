@@ -1,0 +1,4 @@
+# Copie para producao.tfvars e ajuste.
+eleicao    = "<código da eleição no ele-c.json do TSE>"
+turno      = 1
+tag_imagem = "latest" # o CD sobrescreve com o SHA do commit

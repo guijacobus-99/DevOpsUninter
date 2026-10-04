@@ -44,6 +44,11 @@ export const duracaoCiclo = metrica(client.Histogram, {
   buckets: [0.1, 0.25, 0.5, 1, 2, 5, 10],
 });
 
+export const lider = metrica(client.Gauge, {
+  name: 'ingestor_lider',
+  help: '1 se esta instância é o ingestor líder (coleta e publica); 0 se está em espera',
+});
+
 export const ultimoCiclo = metrica(client.Gauge, {
   name: 'ingestor_ultimo_ciclo_timestamp_segundos',
   help: 'Momento em que o último ciclo de coleta terminou',
@@ -81,3 +86,17 @@ metrica(client.Gauge, {
     for (const [abr, ts] of geradoEmPorAbrangencia) this.set({ abrangencia: abr }, (agora - ts) / 1000);
   },
 });
+
+// Contadores com rótulos só passam a existir no primeiro incremento, e `increase()` no
+// Prometheus não enxerga o salto de "inexistente" para 1: a primeira rejeição de cada UF
+// passaria sem alerta. Por isso todas as combinações conhecidas nascem com valor 0.
+export function inicializarSeries(abrangencias, regras) {
+  for (const abrangencia of abrangencias) {
+    for (const resultado of ['novo', 'nao_modificado', 'duplicado', 'erro_http', 'erro_rede']) {
+      coletas.inc({ abrangencia, resultado }, 0);
+    }
+    for (const status of ['aceito', 'rejeitado', 'desatualizado']) snapshots.inc({ abrangencia, status }, 0);
+    for (const [regra, severidade] of regras) violacoes.inc({ abrangencia, regra, severidade }, 0);
+  }
+  for (const destino of ['postgres', 'redis']) falhasPersistencia.inc({ destino }, 0);
+}

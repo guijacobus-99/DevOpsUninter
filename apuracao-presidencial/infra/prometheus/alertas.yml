@@ -56,12 +56,34 @@ groups:
   # ---------------------------------------------------------------- saúde do pipeline
   - name: apuracao-pipeline
     rules:
+      # Só o líder roda ciclos; o max() ignora as instâncias em espera.
       - alert: IngestorParado
-        expr: time() - ingestor_ultimo_ciclo_timestamp_segundos > 30 or up{job="ingestor"} == 0
+        expr: time() - max(ingestor_ultimo_ciclo_timestamp_segundos) > 30 or absent(up{job="ingestor"} == 1)
         for: 1m
         labels: { severidade: critica }
         annotations:
-          resumo: Ingestor sem completar ciclos de coleta
+          resumo: Ingestor líder sem completar ciclos de coleta
+
+      - alert: IngestorSemLider
+        expr: sum(ingestor_lider) < 1 or absent(ingestor_lider)
+        for: 30s
+        labels: { severidade: critica }
+        annotations:
+          resumo: Nenhum ingestor segura o lock de liderança (failover não aconteceu)
+
+      - alert: IngestorComDoisLideres
+        expr: sum(ingestor_lider) > 1
+        for: 30s
+        labels: { severidade: critica }
+        annotations:
+          resumo: Mais de um ingestor se declara líder (verificar o advisory lock no Postgres)
+
+      - alert: IngestorSemEspera
+        expr: count(up{job="ingestor"} == 1) < 2
+        for: 5m
+        labels: { severidade: media }
+        annotations:
+          resumo: Só há uma instância do ingestor; não há quem assuma se ela cair
 
       - alert: FonteComFalhas
         expr: |
